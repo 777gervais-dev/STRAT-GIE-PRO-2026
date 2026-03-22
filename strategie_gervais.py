@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  STRATÉGIE PRO v7 — MACD + BB + VWAP + ML + ICT  [LIVE]        ║
+║  STRATÉGIE PRO v7.1 — MACD + BB + VWAP + ML + ICT  [LIVE]        ║
 ║  5 Modèles ML · Graphique · Journal · ICT · Token persistant    ║
 ║  by 777gervais-dev  |  Intraday 2026                            ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -27,7 +27,7 @@ def sf(val, fmt=",.2f", fallback="N/A"):
 
 # ─── PAGE CONFIG ─────────────────────────────────────────────────────────────
 st.set_page_config(
-    page_title="STRATÉGIE PRO v7 — 7 Actifs",
+    page_title="STRATÉGIE PRO v7.1 — 8 Actifs",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -157,6 +157,7 @@ html,body,[data-testid="stAppViewContainer"]{
 # ─── CONSTANTS ───────────────────────────────────────────────────────────────
 ASSETS = {
     "XAUUSD":  {"source":"oanda","oanda":"XAU_USD",    "binance":None,     "yf":"GC=F",      "yf_fb":["GC=F","XAUUSD=X"],          "dec":3,"pip":0.10},
+    "GC GOLD": {"source":"oanda","oanda":"XAU_USD",    "binance":None,     "yf":"GC=F",      "yf_fb":["GC=F","XAUUSD=X"],          "dec":2,"pip":0.10},
     "BTC/USD": {"source":"binance","oanda":None,       "binance":"BTCUSDT","yf":"BTC-USD",   "yf_fb":["BTC-USD","BTC=F"],           "dec":2,"pip":1.0},
     "CL WTI":  {"source":"oanda","oanda":"WTICO_USD",  "binance":None,     "yf":"CL=F",      "yf_fb":["CL=F","CLJ26.NYM"],          "dec":3,"pip":0.01},
     "EUR/USD": {"source":"oanda","oanda":"EUR_USD",    "binance":None,     "yf":"EURUSD=X",  "yf_fb":["EURUSD=X","EUR=X"],          "dec":5,"pip":0.0001},
@@ -316,6 +317,7 @@ def fetch_yf_with_fallbacks(tickers, iv, period):
             return df
     return None
 
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_yf_direct(ticker, interval="5m", range_="1d"):
     """Fetch Yahoo Finance data via direct HTTP requests — no yfinance lib needed.
     Works on Android even when yfinance lib fails."""
@@ -2143,6 +2145,7 @@ function playTone(type) {
 # ─── CIRCULAR RADIAL MENU ────────────────────────────────────────────────────
 
 # ─── FEAR & GREED INDEX ───────────────────────────────────────────────────────
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_fear_greed():
     """Fetch Fear & Greed Index from alternative.me — free, no key needed."""
     try:
@@ -2777,6 +2780,7 @@ def _last2(symbol):
     prev = d[-2]["close"] if len(d) >= 2 else cur
     return round(cur,5), round(prev,5), round(cur-prev,5)
 
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_vix():
     cur, prev, chg = _last2("^vix")
     if not cur: return None
@@ -2784,6 +2788,7 @@ def fetch_vix():
     return {"value": round(cur,2), "change": round(chg,2),
             "history": hist, "prev": round(prev,2)}
 
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_dxy():
     cur, prev, chg = _last2("dx-y.nyb")
     if not cur:
@@ -2812,6 +2817,7 @@ def fetch_eia_oil():
     if uso_hist: result["uso_history"] = [round(r["close"],2) for r in uso_hist]
     return result
 
+@st.cache_data(ttl=120, show_spinner=False)
 def fetch_gold_sentiment():
     result = {}
     # Gold
@@ -2892,7 +2898,7 @@ def render_sentiment_tab(asset_name, now, res=None):
     import streamlit.components.v1 as components
 
     is_btc  = "BTC" in asset_name
-    is_gold = "XAU" in asset_name or "Gold" in asset_name.upper()
+    is_gold = "XAU" in asset_name or "GC" in asset_name or "Gold" in asset_name.upper() or "GC" in asset_name
     is_oil  = "CL" in asset_name or "WTI" in asset_name or "Oil" in asset_name.upper()
     is_eur  = "EUR" in asset_name or "6E" in asset_name
     is_sp   = "S&P" in asset_name or "ES" in asset_name or "NAS" in asset_name
@@ -3915,7 +3921,7 @@ def render_heatmap_tab(asset_name, res=None):
             _chm_btc.html(html, height=680, scrolling=True)
     else:
         # For non-BTC: show relevant market depth/OI proxies
-        is_gold = "XAU" in asset_name
+        is_gold = "XAU" in asset_name or "GC" in asset_name
         is_oil  = "CL" in asset_name or "WTI" in asset_name
         is_eur  = "EUR" in asset_name or "6E" in asset_name
         is_sp   = "S&P" in asset_name or "ES" in asset_name or "NAS" in asset_name or "NAS" in asset_name
@@ -4156,7 +4162,7 @@ def build_telegram_message(res, asset_name, tf, of_result=None):
             of_line = f"\n⚠️ OrderFlow: Divergence volume ({of_result.get('delta_pct',0):+.1f}%)"
 
     msg = (
-        f"<b>🚀 STRATÉGIE PRO v7 — {asset_name}</b>\n"
+        f"<b>🚀 STRATÉGIE PRO v7.1 — {asset_name}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📊 Signal : {sig_emoji}\n"
         f"💹 Prix   : <code>{price:.5f}</code>\n"
@@ -4246,7 +4252,7 @@ def render_telegram_config(cfg, res, asset_name, tf, of_result=None):
                 st.error("❌ Configure le Token et le Chat ID d'abord.")
             else:
                 test_msg = (
-                    "✅ <b>TEST — STRATÉGIE PRO v7</b>\n"
+                    "✅ <b>TEST — STRATÉGIE PRO v7.1</b>\n"
                     "━━━━━━━━━━━━━━━━━━\n"
                     "🤖 Connexion Telegram opérationnelle !\n"
                     "📱 Les alertes de trading sont actives.\n"
@@ -5558,7 +5564,7 @@ def main():
       <div>
         <div style="font-family:'Rajdhani',sans-serif;font-size:18px;font-weight:700;
              color:#C9A94B;letter-spacing:3px;">
-          <span class="live-dot"></span>STRATÉGIE PRO v7
+          <span class="live-dot"></span>STRATÉGIE PRO v7.1
         </div>
         <div style="font-size:9px;color:#6B7A8D;letter-spacing:2px;">
           MACD · BB · VWAP · ML · ICT · FORCE INDEX · TAPE · ORDER BOOK
@@ -5836,7 +5842,7 @@ def main():
     # Footer
     st.markdown(f'''<div style="text-align:center;margin-top:14px;padding:6px;
          border-top:1px solid #1A3050;font-size:9px;color:#1A3050;">
-      STRATÉGIE PRO v7 — 7 ACTIFS · ML · ICT · FORCE INDEX · TAPE · ORDER BOOK · TELEGRAM
+      STRATÉGIE PRO v7.1 — 8 ACTIFS · ML · ICT · FORCE INDEX · TAPE · ORDER BOOK · TELEGRAM
       — 777gervais-dev — {now.strftime('%Y')} — ⚠️ Outil d\'aide à la décision uniquement.
     </div>''', unsafe_allow_html=True)
 
