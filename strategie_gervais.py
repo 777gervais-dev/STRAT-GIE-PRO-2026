@@ -3748,7 +3748,171 @@ def render_heatmap_tab(asset_name, res=None):
     is_btc = "BTC" in asset_name
 
     if is_btc:
-        render_heatmap()
+        # Try Binance Futures first, fallback to res-based heatmap
+        import streamlit.components.v1 as _chm_btc
+        from contextlib import suppress
+
+        # Quick test if Binance Futures is accessible
+        btc_api_ok = False
+        btc_price  = None
+        try:
+            r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT",
+                             headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
+            if r.status_code == 200:
+                btc_price  = float(r.json().get("markPrice", 0))
+                btc_api_ok = btc_price > 0
+        except: pass
+
+        # Also try spot if futures blocked
+        if not btc_api_ok:
+            try:
+                r = requests.get("https://api.binance.com/api/v3/ticker/price",
+                                 params={"symbol":"BTCUSDT"},
+                                 headers={"User-Agent":"Mozilla/5.0"}, timeout=5)
+                if r.status_code == 200:
+                    btc_price  = float(r.json().get("price", 0))
+                    btc_api_ok = btc_price > 0
+            except: pass
+
+        if btc_api_ok:
+            render_heatmap()
+        else:
+            # ── Full BTC heatmap from res ──────────────────────────────────
+            if not res:
+                st.warning("⚠️ Lance d'abord une analyse BTC pour afficher la Heatmap.")
+                return
+
+            price  = res.get("close", 0)
+            atr    = res.get("atr", price * 0.008)
+            rsi    = res.get("rsi", 50)
+            signal = res.get("signal", "RANGE")
+            conf   = res.get("confluence", 50)
+            vwap   = res.get("vwap", price)
+            bb_up  = res.get("bb_upper", price * 1.008)
+            bb_lo  = res.get("bb_lower", price * 0.992)
+            macd_b = res.get("macd_bull", False)
+            fi13   = res.get("fi13", 0)
+            fvgs   = res.get("fvgs", []) or []
+            obs    = res.get("obs",  []) or []
+            liq    = res.get("liquidity", {}) or {}
+            bsl    = liq.get("buyside",  [])
+            ssl    = liq.get("sellside", [])
+
+            sig_col  = "#0FBF5F" if signal=="BUY" else "#D93025" if signal=="SELL" else "#C9A94B"
+            sig_icon = "🟢" if signal=="BUY" else "🔴" if signal=="SELL" else "🟡"
+            fi13_col = "#0FBF5F" if fi13 > 0 else "#D93025"
+            rsi_col  = "#D93025" if rsi>70 else "#0FBF5F" if rsi<30 else "#C9A94B"
+
+            # Build zones
+            zones = [
+                {"label":"Liquidite Buyside R3",   "price":round(price+atr*3,2),"type":"sell","s":3,"src":"ATR"},
+                {"label":"Resistance R2",           "price":round(price+atr*2,2),"type":"sell","s":2,"src":"ATR"},
+                {"label":"BB Superieure R1",        "price":round(bb_up,2),      "type":"sell","s":1,"src":"BB"},
+            ]
+            for f in [x for x in fvgs if x.get("type")=="bear"][:2]:
+                zones.append({"label":"FVG Baissier","price":round(f.get("mid",price+atr),2),"type":"sell","s":2,"src":"FVG"})
+            for o in [x for x in obs if x.get("type")=="bear"][:1]:
+                zones.append({"label":"Bearish OB",  "price":round(o.get("mid",price+atr*1.5),2),"type":"sell","s":2,"src":"OB"})
+            for lvl in bsl[:2]:
+                zones.append({"label":"Buyside ICT", "price":round(lvl,2),"type":"sell","s":3,"src":"ICT"})
+            zones.append({"label":"VWAP Session",    "price":round(vwap,2),"type":"vwap","s":0,"src":"VWAP"})
+            zones.append({"label":"PRIX ACTUEL",     "price":round(price,2),"type":"current","s":0,"src":""})
+            zones.append({"label":"BB Inferieure S1","price":round(bb_lo,2),"type":"buy","s":1,"src":"BB"})
+            for f in [x for x in fvgs if x.get("type")=="bull"][:2]:
+                zones.append({"label":"FVG Haussier","price":round(f.get("mid",price-atr),2),"type":"buy","s":2,"src":"FVG"})
+            for o in [x for x in obs if x.get("type")=="bull"][:1]:
+                zones.append({"label":"Bullish OB",  "price":round(o.get("mid",price-atr*1.5),2),"type":"buy","s":2,"src":"OB"})
+            for lvl in ssl[:2]:
+                zones.append({"label":"Sellside ICT","price":round(lvl,2),"type":"buy","s":3,"src":"ICT"})
+            zones.append({"label":"Support S2",      "price":round(price-atr*2,2),"type":"buy","s":2,"src":"ATR"})
+            zones.append({"label":"Liquidite Sellside S3","price":round(price-atr*3,2),"type":"buy","s":3,"src":"ATR"})
+            zones.sort(key=lambda x: x["price"], reverse=True)
+
+            # Build rows
+            zone_rows = ""
+            for z in zones:
+                p = z["price"]; dist = round((p-price)/price*100,2)
+                dist_s = f"+{dist:.2f}%" if dist>0 else f"{dist:.2f}%" if dist<0 else "◆ ICI"
+                if z["type"]=="current":
+                    zc="#F0C96A";zb="rgba(240,201,106,.15)";lbl="◆ PRIX ACTUEL BTC";bw=100
+                elif z["type"]=="vwap":
+                    zc="#4A7EC7";zb="rgba(74,126,199,.12)";lbl="── VWAP Session";bw=60
+                elif z["type"]=="sell":
+                    i=min(0.65,0.15+z["s"]*0.17);zc="#D93025";zb=f"rgba(217,48,37,{i:.2f})"
+                    lbl=f"🔴 {'█'*z['s']} {z['label']} [{z['src']}]";bw=min(90,30+z["s"]*20)
+                else:
+                    i=min(0.65,0.15+z["s"]*0.17);zc="#0FBF5F";zb=f"rgba(15,191,95,{i:.2f})"
+                    lbl=f"🟢 {'█'*z['s']} {z['label']} [{z['src']}]";bw=min(90,30+z["s"]*20)
+                zone_rows += (
+                    f'<tr style="background:{zb};border-bottom:1px solid rgba(255,255,255,.04);">'
+                    f'<td style="padding:5px 8px;">'
+                    f'<div style="display:flex;align-items:center;gap:4px;">'
+                    f'<div style="width:{bw}px;max-width:80px;height:12px;background:{zc};border-radius:2px;opacity:.85;flex-shrink:0;"></div>'
+                    f'<span style="color:{zc};font-weight:700;font-size:11px;">${p:,.2f}</span></div></td>'
+                    f'<td style="color:{zc};font-size:11px;padding:5px 8px;">{lbl}</td>'
+                    f'<td style="color:#C9A94B;font-size:11px;padding:5px 8px;text-align:right;">{dist_s}</td></tr>'
+                )
+
+            html = (
+                "<!DOCTYPE html><html><head>"
+                "<style>body{margin:0;padding:8px;background:#060E1A;font-family:sans-serif;color:#DCE8F5;}"
+                "table{width:100%;border-collapse:collapse;}"
+                "th{font-size:10px;color:#6B7A8D;padding:5px 8px;text-align:left;border-bottom:1px solid #1A3050;}"
+                "</style></head><body>"
+
+                '<div style="background:linear-gradient(135deg,#0A1520,#1A0A10);border:2px solid #F0C96A;'
+                'border-radius:10px;padding:10px 14px;margin-bottom:10px;text-align:center;">'
+                '<div style="font-size:15px;font-weight:700;color:#F0C96A;letter-spacing:2px;">'
+                '₿ HEATMAP BTC/USD — ZONES ICT</div>'
+                '<div style="font-size:9px;color:#6B7A8D;margin-top:2px;">'
+                'Zones calculees depuis donnees OANDA/Binance Spot</div></div>'
+
+                f'<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:5px;margin-bottom:10px;">'
+                f'<div style="background:#0F1C2E;border:1px solid #F0C96A;border-radius:7px;padding:7px;text-align:center;">'
+                f'<div style="font-size:9px;color:#6B7A8D;">BTC LIVE</div>'
+                f'<div style="font-size:13px;font-weight:700;color:#F0C96A;">${price:,.2f}</div>'
+                f'<div style="font-size:9px;color:#6B7A8D;">via Binance</div></div>'
+
+                f'<div style="background:#0F1C2E;border:1px solid {sig_col};border-radius:7px;padding:7px;text-align:center;">'
+                f'<div style="font-size:9px;color:#6B7A8D;">SIGNAL</div>'
+                f'<div style="font-size:13px;font-weight:700;color:{sig_col};">{sig_icon} {signal}</div>'
+                f'<div style="font-size:9px;color:{sig_col};">{conf:.0f}%</div></div>'
+
+                f'<div style="background:#0F1C2E;border:1px solid {rsi_col};border-radius:7px;padding:7px;text-align:center;">'
+                f'<div style="font-size:9px;color:#6B7A8D;">RSI(14)</div>'
+                f'<div style="font-size:13px;font-weight:700;color:{rsi_col};">{rsi:.1f}</div>'
+                f'<div style="font-size:9px;color:{rsi_col};">{"Surachat" if rsi>70 else "Survente" if rsi<30 else "Neutre"}</div></div>'
+
+                f'<div style="background:#0F1C2E;border:1px solid {fi13_col};border-radius:7px;padding:7px;text-align:center;">'
+                f'<div style="font-size:9px;color:#6B7A8D;">FI(13)</div>'
+                f'<div style="font-size:13px;font-weight:700;color:{fi13_col};">{fi13:+.0f}</div>'
+                f'<div style="font-size:9px;color:{fi13_col};">{"HAUSSIER" if fi13>0 else "BAISSIER"}</div></div>'
+                f'</div>'
+
+                f'<div style="display:flex;gap:6px;margin-bottom:10px;">'
+                f'<div style="flex:1;background:rgba(0,0,0,.2);border-left:3px solid {"#0FBF5F" if macd_b else "#D93025"};'
+                f'border-radius:5px;padding:6px 10px;font-size:11px;color:{"#0FBF5F" if macd_b else "#D93025"};">'
+                f'MACD {"Haussier ↑" if macd_b else "Baissier ↓"}</div>'
+                f'<div style="flex:1;background:rgba(0,0,0,.2);border-left:3px solid {"#0FBF5F" if price>vwap else "#D93025"};'
+                f'border-radius:5px;padding:6px 10px;font-size:11px;color:{"#0FBF5F" if price>vwap else "#D93025"};">'
+                f'VWAP {"Au-dessus ↑" if price>vwap else "En-dessous ↓"} (${vwap:,.2f})</div>'
+                f'</div>'
+
+                f'<div style="font-size:12px;color:#F0C96A;letter-spacing:2px;margin-bottom:6px;">🗺️ HEATMAP — ZONES DE LIQUIDITE BTC</div>'
+                f'<div style="font-size:9px;color:#6B7A8D;margin-bottom:6px;">🔴 Resistance/Buyside Liq &nbsp;|&nbsp; 🟢 Support/Sellside Liq &nbsp;|&nbsp; [FVG]/[OB]/[ICT] = Source</div>'
+                f'<table><thead><tr><th>Niveau + Force</th><th>Zone ICT</th><th>Distance</th></tr></thead>'
+                f'<tbody>{zone_rows}</tbody></table>'
+
+                f'<div style="background:#0F1C2E;border-left:3px solid #F0C96A;border-radius:6px;'
+                f'padding:9px 12px;margin-top:10px;font-size:11px;color:#8A95A3;line-height:1.9;">'
+                f'<b style="color:#F0C96A;">📖 REGLES ICT BTC :</b><br>'
+                f'🔴 Zones rouges = Liquidite buyside → Cible SELL institutions<br>'
+                f'🟢 Zones vertes = Liquidite sellside → Cible BUY institutions<br>'
+                f'[FVG] = Fair Value Gap | [OB] = Order Block | [ICT] = Niveau pur<br>'
+                f'HALVING BTC + NFP + FOMC → Catalyseurs majeurs direction'
+                f'</div></body></html>'
+            )
+            _chm_btc.html(html, height=680, scrolling=True)
     else:
         # For non-BTC: show relevant market depth/OI proxies
         is_gold = "XAU" in asset_name
