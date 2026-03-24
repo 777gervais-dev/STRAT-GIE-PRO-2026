@@ -2021,14 +2021,25 @@ def render_claude_tab(res, results_all, asset_name, tf_sel, api_key, now, active
             )
             mph.markdown(modal_claude_html("✅ Analyse terminée !", 100), unsafe_allow_html=True)
             time.sleep(0.4)
-            mph.empty()
+            # Save candles to cache
+        try:
+            _cc = st.session_state.get("candle_cache", {})
+            _ct = st.session_state.get("candle_cache_ts", {})
+            for tf, df in dfs.items():
+                if df is not None:
+                    _cc[f"{asset_name}_{tf}"] = df
+                    _ct[f"{asset_name}_{tf}"] = _now_ts
+            st.session_state["candle_cache"]    = _cc
+            st.session_state["candle_cache_ts"] = _ct
+        except: pass
+        mph.empty()
 
-            if error:
-                st.error(error)
-            else:
-                ts_now = now.strftime("%H:%M UTC")
-                st.session_state[cache_key] = {"text": analysis, "ts": ts_now}
-                st.rerun()
+        if error:
+            st.error(error)
+        else:
+            ts_now = now.strftime("%H:%M UTC")
+            st.session_state[cache_key] = {"text": analysis, "ts": ts_now}
+            st.rerun()
 
 
 
@@ -6051,34 +6062,73 @@ def main():
     # ── RUN ANALYSIS ─────────────────────────────────────────────────────────
     if run:
         mph  = st.empty()
-        tfs  = ["5m","15m","30m","1h"] if multi_tf else [tf_sel]
+        # Smart TF list — avoid redundant fetches
+        if multi_tf:
+            # Always include selected TF + adjacent TFs (max 3)
+            all_tfs = ["5m","15m","30m","1h"]
+            idx = all_tfs.index(tf_sel)
+            # Include: selected TF + next 2 higher TFs for HTF bias
+            tfs = list(dict.fromkeys([tf_sel] + all_tfs[max(0,idx):idx+3]))
+        else:
+            tfs = [tf_sel]
         results = {}; dfs = {}; sources = {}
+        # ── Use cached candles if fresh (< 30s) ──────────────────────────
+        _cache_key = f"{asset_name}_{tf_sel}"
+        _cache_ts  = st.session_state.get("candle_cache_ts", {})
+        _candle_cache = st.session_state.get("candle_cache", {})
+        _now_ts    = datetime.now(timezone.utc).timestamp()
+        _use_cache = (
+            _cache_key in _candle_cache and
+            _cache_key in _cache_ts and
+            _now_ts - _cache_ts.get(_cache_key, 0) < 30
+        )
         steps = [
-            (8,  "Connexion aux marchés live..."),
-            (18, f"Source : {'Binance ⚡' if asset_cfg['source']=='binance' else 'OANDA 🔵' if oanda_key else 'Yahoo Finance ⚠️'}"),
-            (30, f"Download candles {asset_name} {tf_sel}..."),
-            (45, "VWAP · BB · MACD · ATR · Stoch · Pivots..."),
-            (60, "ICT — FVG · Order Blocks · Liquidité..."),
-            (80, "Features ML · 5 modèles ensemble..."),
-            (94, "Confluence · TP/SL · Score final..."),
+            (15, f"Connexion {('Binance ⚡' if asset_cfg['source']=='binance' else 'OANDA 🔵' if oanda_key else 'Yahoo ⚠️')}..."),
+            (30, f"Download {asset_name} {tf_sel} (parallel)..."),
+            (80, "ML · ICT · FVG · OrderBlocks · Force Index..."),
+            (95, "Confluence · TP/SL · Score final..."),
             (100,"✅ Analyse complète"),
         ]
         for pct, slbl in steps:
             mph.markdown(modal_html(slbl, pct), unsafe_allow_html=True)
-            time.sleep(0.18)
+            time.sleep(0.05)
             if pct == 30:
-                for tf in tfs:
+                # ── Parallel fetch — all TFs at once ─────────────────────
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                def _fetch_tf(tf):
                     df, src = get_candles(asset_cfg, tf, oanda_key, oanda_demo)
-                    dfs[tf] = df; sources[tf] = src
+                    return tf, df, src
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    futs = {ex.submit(_fetch_tf, tf): tf for tf in tfs}
+                    for fut in as_completed(futs):
+                        try:
+                            tf, df, src = fut.result(timeout=15)
+                            dfs[tf] = df; sources[tf] = src
+                        except: pass
             if pct == 80:
-                lp, ls = get_live_price(asset_cfg, oanda_key, oanda_demo)
+                # ── Parallel: live price + ML analysis ───────────────────
+                from concurrent.futures import ThreadPoolExecutor
+                def _get_lp(): return get_live_price(asset_cfg, oanda_key, oanda_demo)
+                def _analyse_tf(tf): return tf, analyse(dfs.get(tf), tf, None)
+                with ThreadPoolExecutor(max_workers=5) as ex:
+                    lp_fut = ex.submit(_get_lp)
+                    ana_futs = {ex.submit(_analyse_tf, tf): tf for tf in tfs}
+                    try:
+                        lp, ls = lp_fut.result(timeout=10)
+                    except:
+                        lp, ls = None, "error"
+                    for fut in ana_futs:
+                        try:
+                            tf, res_tf = fut.result(timeout=15)
+                            # Apply live price to selected TF
+                            if tf == tf_sel and lp and res_tf:
+                                res_tf = analyse(dfs.get(tf), tf, lp)
+                            results[tf] = res_tf
+                        except: pass
                 st.session_state["live_price"] = lp
                 st.session_state["live_src"]   = ls or sources.get(tf_sel,"yfinance")
-                # Cache BTC price for Heatmap/Tape fallback
                 if "BTC" in asset_name and lp:
                     st.session_state["live_price_btc"] = lp
-                for tf in tfs:
-                    results[tf] = analyse(dfs.get(tf), tf, lp if tf==tf_sel else None)
         mph.empty()
 
         res_main = results.get(tf_sel)
